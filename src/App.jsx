@@ -28,11 +28,9 @@ const splitCyclesAuto = (nodes) => {
     const stability = 1 / (1 + Math.sqrt(variance));
     const lengthScore = avg >= 2 && avg <= 15 ? 1.2 : 1;
     
-    // Evaluate loop similarity
     let simScore = 0;
     let simCount = 0;
     for (let i = 0; i < positions.length - 1; i++) {
-      const len1 = positions[i+1] - positions[i];
       const nextPos = i + 2 < positions.length ? positions[i+2] : nodes.length;
       
       const slice1 = nodes.slice(positions[i], positions[i+1]);
@@ -61,7 +59,6 @@ const splitCyclesAuto = (nodes) => {
     return [{ type: "all", nodes, total: nodes.reduce((a,b)=>a+b.time,0) }];
   }
 
-  // Boundary Alignment (Backward Shift)
   let b = [...bestPattern.positions];
   let maxShift = 0;
   
@@ -121,7 +118,6 @@ const splitCyclesAuto = (nodes) => {
         let nextStartRelIdx = -1;
         const minLen = Math.max(1, Math.floor(prevLoop.length * 0.5));
         
-        // 策略1：在合理范围内寻找下一个循环起点的特征节点
         for (let i = minLen; i < tail.length; i++) {
           if (tail[i].name === loopStartNode) {
             let matches = 0;
@@ -129,7 +125,6 @@ const splitCyclesAuto = (nodes) => {
             for (let j = 0; j < compareLen; j++) {
               if (tail[j].name === prevLoop[j].name) matches++;
             }
-            // 如果相似度高达 70% 以上，认定为一个完整循环
             if (matches / compareLen >= 0.7) {
               nextStartRelIdx = i;
               break;
@@ -137,7 +132,6 @@ const splitCyclesAuto = (nodes) => {
           }
         }
         
-        // 策略2：如果尾部没有下一个起点节点，但它的长度和内容刚好完美匹配上一个循环
         if (nextStartRelIdx === -1 && tail.length >= prevLoop.length) {
           let matches = 0;
           for (let i = 0; i < prevLoop.length; i++) {
@@ -148,7 +142,6 @@ const splitCyclesAuto = (nodes) => {
           }
         }
         
-        // 提取额外循环
         if (nextStartRelIdx !== -1) {
           const extraLoop = tail.slice(0, nextStartRelIdx);
           groups.push({
@@ -193,6 +186,21 @@ export default function App() {
   const [planFilter, setPlanFilter] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
+  
+  // 记录每个 Plan 下各 Run 的展开/折叠状态
+  const [expandedRuns, setExpandedRuns] = useState({});
+
+  // 每次切换 activePlan 时，默认折叠所有，展开第一个
+  useEffect(() => {
+    setExpandedRuns({ 0: true });
+  }, [activePlan]);
+
+  const toggleRun = (index) => {
+    setExpandedRuns(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
 
   // Parse 逻辑完全保留
   const parseLog = (text) => {
@@ -507,8 +515,8 @@ export default function App() {
                 </div>
 
                 {/* 执行流与循环结构分析 */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="p-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="p-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between rounded-t-2xl">
                     <h3 className="text-slate-800 font-bold flex items-center gap-2">
                       <span className="bg-blue-100 text-blue-600 p-1.5 rounded-lg">🔄</span> 
                       节点执行流拆解与循环识别
@@ -521,11 +529,21 @@ export default function App() {
                       const totalTime = run.groups?.reduce((sum,g)=>sum+g.total,0) || 0;
                       const loopGroups = run.groups?.filter(g => g.type === 'loop') || [];
                       const hasLoops = loopGroups.length > 0;
+                      const loopTotals = loopGroups.map(g => g.total).filter(t => Number.isFinite(t));
+                      const loopAvg = loopTotals.length > 0 ? (loopTotals.reduce((a, b) => a + b, 0) / loopTotals.length) : null;
+                      const loopMax = loopTotals.length > 0 ? Math.max(...loopTotals) : null;
+                      const loopMin = loopTotals.length > 0 ? Math.min(...loopTotals) : null;
+                      const isExpanded = !!expandedRuns[i];
                       
                       return (
-                        <div key={i} className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
-                          {/* Run Header */}
-                          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-white">
+                        <div key={i} className="bg-slate-50 rounded-xl border border-slate-200">
+                          {/* Run Header (Sticky & Clickable) */}
+                          <div 
+                            onClick={() => toggleRun(i)}
+                            className={`flex items-center justify-between px-4 py-3 bg-white cursor-pointer hover:bg-slate-50 transition-colors sticky top-0 z-10 ${
+                              isExpanded ? "border-b border-slate-200 rounded-t-xl shadow-sm" : "rounded-xl"
+                            }`}
+                          >
                             <div className="flex items-center gap-3">
                               <span className="bg-slate-800 text-white w-6 h-6 rounded flex items-center justify-center text-xs font-bold shadow-sm">{i+1}</span>
                               <span className="text-sm font-bold text-slate-700">运行记录 #{i+1}</span>
@@ -535,14 +553,42 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-sm font-bold text-slate-800 tabular-nums bg-slate-100 px-3 py-1 rounded-md">
-                              总耗时: {totalTime.toFixed(3)}s
+                            <div className="flex items-center gap-4">
+                              <div className="hidden md:flex items-center gap-2 text-[11px] font-semibold text-slate-600">
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  循环均值: {loopAvg === null ? "-" : `${loopAvg.toFixed(3)}s`}
+                                </span>
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  最大: {loopMax === null ? "-" : `${loopMax.toFixed(3)}s`}
+                                </span>
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  最小: {loopMin === null ? "-" : `${loopMin.toFixed(3)}s`}
+                                </span>
+                              </div>
+                              <div className="text-sm font-bold text-slate-800 tabular-nums bg-slate-100 px-3 py-1 rounded-md">
+                                总耗时: {totalTime.toFixed(3)}s
+                              </div>
+                              <svg 
+                                className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} 
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
+                              </svg>
                             </div>
                           </div>
                           
-                          {/* 阶段列表 */}
-                          <div className="p-3 flex flex-col gap-2">
-                            {run.groups?.map((g, gi) => {
+                          {/* 阶段列表 (可折叠) */}
+                          <AnimatePresence initial={false}>
+                            {isExpanded && (
+                              <motion.div 
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: "auto", opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                transition={{ duration: 0.3, ease: "easeInOut" }}
+                                className="overflow-hidden"
+                              >
+                                <div className="p-3 flex flex-col gap-2">
+                                  {run.groups?.map((g, gi) => {
                               const config = GROUP_CONFIG[g.type];
                               const percentage = totalTime > 0 ? (g.total / totalTime * 100).toFixed(1) : 0;
                               
@@ -595,7 +641,10 @@ export default function App() {
                                 </div>
                               );
                             })}
-                          </div>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                         </div>
                       );
                     })}

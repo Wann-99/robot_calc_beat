@@ -27,79 +27,29 @@ const splitCyclesAuto = (nodes) => {
     const variance = diffs.reduce((a,b)=>a+(b-avg)*(b-avg),0) / diffs.length;
     const stability = 1 / (1 + Math.sqrt(variance));
     const lengthScore = avg >= 2 && avg <= 15 ? 1.2 : 1;
-    
-    // Evaluate loop similarity
-    let simScore = 0;
-    let simCount = 0;
-    for (let i = 0; i < positions.length - 1; i++) {
-      const len1 = positions[i+1] - positions[i];
-      const nextPos = i + 2 < positions.length ? positions[i+2] : nodes.length;
-      
-      const slice1 = nodes.slice(positions[i], positions[i+1]);
-      const slice2 = nodes.slice(positions[i+1], nextPos);
-      
-      let matches = 0;
-      const compareLen = Math.min(slice1.length, slice2.length);
-      for(let j=0; j<compareLen; j++){
-        if (slice1[j].name === slice2[j].name) matches++;
-      }
-      
-      const sim = slice1.length > 0 ? matches / slice1.length : 0;
-      simScore += sim;
-      simCount++;
-    }
-    
-    const avgSim = simCount > 0 ? simScore / simCount : 0;
-    const score = positions.length * stability * lengthScore * Math.pow(avgSim, 2);
+    const score = positions.length * stability * lengthScore;
 
     if (score > bestScore) {
-      bestScore = score; bestNode = name; bestPattern = { positions, avgInterval: avg, diffs, avgSim };
+      bestScore = score; bestNode = name; bestPattern = { positions, avgInterval: avg, diffs };
     }
   });
 
-  if (!bestNode || !bestPattern || bestScore < 0.1) {
+  if (!bestNode || !bestPattern || bestScore < 1.0) {
     return [{ type: "all", nodes, total: nodes.reduce((a,b)=>a+b.time,0) }];
   }
 
-  // Boundary Alignment (Backward Shift)
-  let b = [...bestPattern.positions];
-  let maxShift = 0;
-  
-  while (true) {
-    const shift = maxShift + 1;
-    if (b[0] - shift < 0) break;
-    
-    let allMatch = true;
-    const refNode = nodes[b[0] - shift].name;
-    for (let i = 1; i < b.length; i++) {
-      if (b[i] - shift < 0 || nodes[b[i] - shift].name !== refNode) {
-        allMatch = false;
-        break;
-      }
-    }
-    
-    if (allMatch) {
-      maxShift = shift;
-    } else {
-      break;
-    }
-  }
-
-  for (let i = 0; i < b.length; i++) {
-    b[i] -= maxShift;
-  }
-
+  const { positions } = bestPattern;
   const groups = [];
 
-  if (b[0] > 0) {
-    const init = nodes.slice(0, b[0]);
+  if (positions[0] > 0) {
+    const init = nodes.slice(0, positions[0]);
     groups.push({ type: "init", nodes: init, total: init.reduce((a,b)=>a+b.time,0) });
   }
 
   let loopIndex = 1;
-  for (let i = 0; i < b.length - 1; i++) {
-    const start = b[i];
-    const end = b[i + 1];
+  for (let i = 0; i < positions.length - 1; i++) {
+    const start = positions[i];
+    const end = positions[i + 1];
     const slice = nodes.slice(start, end);
     groups.push({
       type: "loop", index: loopIndex++, nodes: slice,
@@ -107,69 +57,14 @@ const splitCyclesAuto = (nodes) => {
     });
   }
 
-  const lastPos = b[b.length - 1];
+  const lastPos = positions[positions.length - 1];
   if (lastPos < nodes.length) {
-    let tail = nodes.slice(lastPos);
-    
-    while (tail.length > 0) {
-      let extracted = false;
-      
-      if (groups.length > 0 && groups[groups.length - 1].type === "loop") {
-        const prevLoop = groups[groups.length - 1].nodes;
-        const loopStartNode = prevLoop[0].name;
-        
-        let nextStartRelIdx = -1;
-        const minLen = Math.max(1, Math.floor(prevLoop.length * 0.5));
-        
-        // 策略1：在合理范围内寻找下一个循环起点的特征节点
-        for (let i = minLen; i < tail.length; i++) {
-          if (tail[i].name === loopStartNode) {
-            let matches = 0;
-            const compareLen = Math.min(i, prevLoop.length);
-            for (let j = 0; j < compareLen; j++) {
-              if (tail[j].name === prevLoop[j].name) matches++;
-            }
-            // 如果相似度高达 70% 以上，认定为一个完整循环
-            if (matches / compareLen >= 0.7) {
-              nextStartRelIdx = i;
-              break;
-            }
-          }
-        }
-        
-        // 策略2：如果尾部没有下一个起点节点，但它的长度和内容刚好完美匹配上一个循环
-        if (nextStartRelIdx === -1 && tail.length >= prevLoop.length) {
-          let matches = 0;
-          for (let i = 0; i < prevLoop.length; i++) {
-            if (tail[i].name === prevLoop[i].name) matches++;
-          }
-          if (matches / prevLoop.length >= 0.8) {
-            nextStartRelIdx = prevLoop.length;
-          }
-        }
-        
-        // 提取额外循环
-        if (nextStartRelIdx !== -1) {
-          const extraLoop = tail.slice(0, nextStartRelIdx);
-          groups.push({
-            type: "loop", index: loopIndex++, nodes: extraLoop,
-            total: extraLoop.reduce((a,b)=>a+b.time,0), triggerNode: bestNode
-          });
-          tail = tail.slice(nextStartRelIdx);
-          extracted = true;
-        }
-      }
-      
-      if (!extracted) break;
-    }
-
-    if (tail.length > 0) {
-      const hasLoopNode = tail.some(n => n.name === bestNode);
-      groups.push({
-        type: hasLoopNode ? "tail" : "cleanup", nodes: tail,
-        total: tail.reduce((a,b)=>a+b.time,0)
-      });
-    }
+    const tail = nodes.slice(lastPos);
+    const hasLoopNode = tail.some(n => n.name === bestNode);
+    groups.push({
+      type: hasLoopNode ? "tail" : "cleanup", nodes: tail,
+      total: tail.reduce((a,b)=>a+b.time,0)
+    });
   }
   return groups;
 };

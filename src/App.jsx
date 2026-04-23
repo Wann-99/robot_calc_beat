@@ -523,16 +523,17 @@ export default function App() {
             <RangePicker 
               showTime={{ format: 'HH:mm' }}
               format="YYYY-MM-DD HH:mm"
+              allowEmpty={[true, true]} // 允许只选开始或只选结束
               onChange={(dates) => {
                 if (dates) {
-                  setStartTime(dates[0]);
-                  setEndTime(dates[1]);
+                  setStartTime(dates[0] || null);
+                  setEndTime(dates[1] || null);
                 } else {
                   setStartTime(null);
                   setEndTime(null);
                 }
               }}
-              value={startTime && endTime ? [startTime, endTime] : null}
+              value={[startTime, endTime]}
               className="h-[38px] w-[320px] bg-slate-50 border-slate-200 hover:border-blue-400 focus:border-blue-500 focus:shadow-[0_0_0_2px_rgba(59,130,246,0.2)]"
             />
           </ConfigProvider>

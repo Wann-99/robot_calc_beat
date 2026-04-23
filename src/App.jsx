@@ -5,6 +5,14 @@ import {
   BarChart, Bar, Cell
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
+import { DatePicker, ConfigProvider } from "antd";
+import locale from "antd/locale/zh_CN";
+import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
+
+dayjs.locale("zh-cn");
+
+const { RangePicker } = DatePicker;
 
 /* ================= 优化的自动循环识别算法 (保持逻辑完全不变) ================= */
 const splitCyclesAuto = (nodes) => {
@@ -184,8 +192,8 @@ export default function App() {
   const [rawText, setRawText] = useState("");
 
   const [planFilter, setPlanFilter] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
+  const [startTime, setStartTime] = useState(null);
+  const [endTime, setEndTime] = useState(null);
   
   // 新增 appState 来控制页面生命周期
   const [appState, setAppState] = useState("splash"); // "splash" | "welcome" | "dashboard"
@@ -256,11 +264,18 @@ export default function App() {
     const trend = {};
 
     Object.entries(planRuns).forEach(([plan, runs]) => {
-      if (planFilter && !plan.includes(planFilter)) return;
+      if (planFilter && !plan.toLowerCase().includes(planFilter.toLowerCase())) return;
       const filteredRuns = runs.filter(run => {
-        const t = run.startTime?.getTime();
-        if (startTime && t < new Date(startTime).getTime()) return false;
-        if (endTime && t > new Date(endTime).getTime()) return false;
+        if (!run.startTime) return true; // 如果没有时间戳则不过滤
+        const t = run.startTime.getTime();
+        
+        // startTime 和 endTime 是 dayjs 对象
+        if (startTime) {
+          if (t < startTime.valueOf()) return false;
+        }
+        if (endTime) {
+          if (t > endTime.valueOf()) return false;
+        }
         return true;
       });
 
@@ -414,7 +429,7 @@ export default function App() {
             transition={{ delay: 0.4, duration: 0.6 }}
             className="text-4xl md:text-5xl font-extrabold tracking-tight font-mono mb-2"
           >
-            Robot Beat Analyzer
+            RCA.log Analyzer
           </motion.h1>
           <motion.p
             initial={{ opacity: 0 }}
@@ -453,10 +468,9 @@ export default function App() {
             <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
           </div>
           <h2 className="text-2xl font-extrabold text-slate-800 mb-3 tracking-tight">导入日志文件</h2>
-          <p className="text-slate-500 text-sm mb-8 leading-relaxed whitespace-pre-line">
-		{`请上传 RobotControlApp_xxxx-xx-xx .log 文件
-		系统将自动进行拆解与分析`}
-	</p>
+          <p className="text-slate-500 text-sm mb-8 leading-relaxed">
+            请上传包含 Plan 和节点执行时间的 .log 文件，系统将自动进行循环拆解与性能分析。
+          </p>
           
           <label className="relative block group cursor-pointer">
             <div className="absolute inset-0 bg-blue-500 rounded-xl blur opacity-25 group-hover:opacity-40 transition-opacity duration-300"></div>
@@ -491,11 +505,25 @@ export default function App() {
             type="text" placeholder="搜索 Plan..." value={planFilter} onChange={e=>setPlanFilter(e.target.value)} 
             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-sm transition-all shadow-inner w-32 md:w-40" 
           />
-          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2 shadow-inner">
-            <input type="datetime-local" value={startTime} onChange={e=>setStartTime(e.target.value)} className="px-1 py-2 text-xs text-slate-600 outline-none bg-transparent" />
-            <span className="text-slate-300">-</span>
-            <input type="datetime-local" value={endTime} onChange={e=>setEndTime(e.target.value)} className="px-1 py-2 text-xs text-slate-600 outline-none bg-transparent" />
-          </div>
+          
+          <ConfigProvider locale={locale} theme={{ token: { colorPrimary: '#3b82f6', borderRadius: 6 } }}>
+            <RangePicker 
+              showTime={{ format: 'HH:mm' }}
+              format="YYYY-MM-DD HH:mm"
+              onChange={(dates) => {
+                if (dates) {
+                  setStartTime(dates[0]);
+                  setEndTime(dates[1]);
+                } else {
+                  setStartTime(null);
+                  setEndTime(null);
+                }
+              }}
+              value={startTime && endTime ? [startTime, endTime] : null}
+              className="h-[38px] w-[320px] bg-slate-50 border-slate-200 hover:border-blue-400 focus:border-blue-500 focus:shadow-[0_0_0_2px_rgba(59,130,246,0.2)]"
+            />
+          </ConfigProvider>
+
           <button className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-all shadow-md active:scale-95" onClick={applyFilter}>
             筛选
           </button>
@@ -527,6 +555,14 @@ export default function App() {
                 className="p-6 text-center text-sm text-slate-400 mt-10 bg-white/40 rounded-xl border border-slate-100/50 border-dashed"
               >
                 暂无数据，请先导入日志
+              </motion.div>
+            ) : Object.keys(result).length === 0 ? (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                className="p-6 text-center text-sm text-slate-400 mt-10 bg-white/40 rounded-xl border border-slate-100/50 border-dashed flex flex-col items-center gap-3"
+              >
+                <svg className="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                <span>没有找到符合筛选条件的 Plan</span>
               </motion.div>
             ) : (
               <motion.div

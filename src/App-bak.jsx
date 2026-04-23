@@ -27,29 +27,76 @@ const splitCyclesAuto = (nodes) => {
     const variance = diffs.reduce((a,b)=>a+(b-avg)*(b-avg),0) / diffs.length;
     const stability = 1 / (1 + Math.sqrt(variance));
     const lengthScore = avg >= 2 && avg <= 15 ? 1.2 : 1;
-    const score = positions.length * stability * lengthScore;
+    
+    let simScore = 0;
+    let simCount = 0;
+    for (let i = 0; i < positions.length - 1; i++) {
+      const nextPos = i + 2 < positions.length ? positions[i+2] : nodes.length;
+      
+      const slice1 = nodes.slice(positions[i], positions[i+1]);
+      const slice2 = nodes.slice(positions[i+1], nextPos);
+      
+      let matches = 0;
+      const compareLen = Math.min(slice1.length, slice2.length);
+      for(let j=0; j<compareLen; j++){
+        if (slice1[j].name === slice2[j].name) matches++;
+      }
+      
+      const sim = slice1.length > 0 ? matches / slice1.length : 0;
+      simScore += sim;
+      simCount++;
+    }
+    
+    const avgSim = simCount > 0 ? simScore / simCount : 0;
+    const score = positions.length * stability * lengthScore * Math.pow(avgSim, 2);
 
     if (score > bestScore) {
-      bestScore = score; bestNode = name; bestPattern = { positions, avgInterval: avg, diffs };
+      bestScore = score; bestNode = name; bestPattern = { positions, avgInterval: avg, diffs, avgSim };
     }
   });
 
-  if (!bestNode || !bestPattern || bestScore < 1.0) {
+  if (!bestNode || !bestPattern || bestScore < 0.1) {
     return [{ type: "all", nodes, total: nodes.reduce((a,b)=>a+b.time,0) }];
   }
 
-  const { positions } = bestPattern;
+  let b = [...bestPattern.positions];
+  let maxShift = 0;
+  
+  while (true) {
+    const shift = maxShift + 1;
+    if (b[0] - shift < 0) break;
+    
+    let allMatch = true;
+    const refNode = nodes[b[0] - shift].name;
+    for (let i = 1; i < b.length; i++) {
+      if (b[i] - shift < 0 || nodes[b[i] - shift].name !== refNode) {
+        allMatch = false;
+        break;
+      }
+    }
+    
+    if (allMatch) {
+      maxShift = shift;
+    } else {
+      break;
+    }
+  }
+
+  for (let i = 0; i < b.length; i++) {
+    b[i] -= maxShift;
+  }
+
   const groups = [];
 
-  if (positions[0] > 0) {
-    const init = nodes.slice(0, positions[0]);
+  if (b[0] > 0) {
+    const init = nodes.slice(0, b[0]);
     groups.push({ type: "init", nodes: init, total: init.reduce((a,b)=>a+b.time,0) });
   }
 
   let loopIndex = 1;
-  for (let i = 0; i < positions.length - 1; i++) {
-    const start = positions[i];
-    const end = positions[i + 1];
+  for (let i = 0; i < b.length - 1; i++) {
+    const start = b[i];
+    const end = b[i + 1];
     const slice = nodes.slice(start, end);
     groups.push({
       type: "loop", index: loopIndex++, nodes: slice,
@@ -57,14 +104,65 @@ const splitCyclesAuto = (nodes) => {
     });
   }
 
-  const lastPos = positions[positions.length - 1];
+  const lastPos = b[b.length - 1];
   if (lastPos < nodes.length) {
-    const tail = nodes.slice(lastPos);
-    const hasLoopNode = tail.some(n => n.name === bestNode);
-    groups.push({
-      type: hasLoopNode ? "tail" : "cleanup", nodes: tail,
-      total: tail.reduce((a,b)=>a+b.time,0)
-    });
+    let tail = nodes.slice(lastPos);
+    
+    while (tail.length > 0) {
+      let extracted = false;
+      
+      if (groups.length > 0 && groups[groups.length - 1].type === "loop") {
+        const prevLoop = groups[groups.length - 1].nodes;
+        const loopStartNode = prevLoop[0].name;
+        
+        let nextStartRelIdx = -1;
+        const minLen = Math.max(1, Math.floor(prevLoop.length * 0.5));
+        
+        for (let i = minLen; i < tail.length; i++) {
+          if (tail[i].name === loopStartNode) {
+            let matches = 0;
+            const compareLen = Math.min(i, prevLoop.length);
+            for (let j = 0; j < compareLen; j++) {
+              if (tail[j].name === prevLoop[j].name) matches++;
+            }
+            if (matches / compareLen >= 0.7) {
+              nextStartRelIdx = i;
+              break;
+            }
+          }
+        }
+        
+        if (nextStartRelIdx === -1 && tail.length >= prevLoop.length) {
+          let matches = 0;
+          for (let i = 0; i < prevLoop.length; i++) {
+            if (tail[i].name === prevLoop[i].name) matches++;
+          }
+          if (matches / prevLoop.length >= 0.8) {
+            nextStartRelIdx = prevLoop.length;
+          }
+        }
+        
+        if (nextStartRelIdx !== -1) {
+          const extraLoop = tail.slice(0, nextStartRelIdx);
+          groups.push({
+            type: "loop", index: loopIndex++, nodes: extraLoop,
+            total: extraLoop.reduce((a,b)=>a+b.time,0), triggerNode: bestNode
+          });
+          tail = tail.slice(nextStartRelIdx);
+          extracted = true;
+        }
+      }
+      
+      if (!extracted) break;
+    }
+
+    if (tail.length > 0) {
+      const hasLoopNode = tail.some(n => n.name === bestNode);
+      groups.push({
+        type: hasLoopNode ? "tail" : "cleanup", nodes: tail,
+        total: tail.reduce((a,b)=>a+b.time,0)
+      });
+    }
   }
   return groups;
 };
@@ -88,6 +186,34 @@ export default function App() {
   const [planFilter, setPlanFilter] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
+  
+  // 新增 appState 来控制页面生命周期
+  const [appState, setAppState] = useState("splash"); // "splash" | "welcome" | "dashboard"
+  
+  // 记录每个 Plan 下各 Run 的展开/折叠状态
+  const [expandedRuns, setExpandedRuns] = useState({});
+
+  // 启动动画倒计时
+  useEffect(() => {
+    if (appState === "splash") {
+      const timer = setTimeout(() => {
+        setAppState("welcome");
+      }, 2500); // 2.5s 动画后进入 welcome
+      return () => clearTimeout(timer);
+    }
+  }, [appState]);
+
+  // 每次切换 activePlan 时，默认折叠所有，展开第一个
+  useEffect(() => {
+    setExpandedRuns({ 0: true });
+  }, [activePlan]);
+
+  const toggleRun = (index) => {
+    setExpandedRuns(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
 
   // Parse 逻辑完全保留
   const parseLog = (text) => {
@@ -187,6 +313,9 @@ export default function App() {
     // 自动选中第一个 Plan
     const plans = Object.keys(parsedData);
     if (plans.length > 0) setActivePlan(plans[0]);
+    
+    // 成功导入数据后，进入仪表盘主界面
+    setAppState("dashboard");
   };
 
   const applyFilter = () => {
@@ -203,11 +332,151 @@ export default function App() {
   // 当前激活的数据
   const activeData = result && activePlan ? result[activePlan] : null;
 
+  /* ================= 页面阶段 1：启动动画 (Splash) ================= */
+  if (appState === "splash") {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-900 text-white overflow-hidden relative">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-blue-900/40 via-slate-900 to-slate-900"></div>
+        <motion.div
+          initial={{ scale: 0.8, opacity: 0, filter: "blur(10px)" }}
+          animate={{ scale: 1, opacity: 1, filter: "blur(0px)" }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+          className="flex flex-col items-center relative z-10"
+        >
+          {/* Animated Robot Logo */}
+          <div className="w-28 h-28 bg-blue-600 rounded-[2rem] shadow-[0_0_60px_rgba(37,99,235,0.6)] flex items-center justify-center mb-8 relative overflow-hidden">
+            {/* 扫描线光效 */}
+            <motion.div 
+              initial={{ y: "-100%" }}
+              animate={{ y: "100%" }}
+              transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
+              className="absolute inset-0 w-full h-[20%] bg-gradient-to-b from-transparent via-white/30 to-transparent"
+            />
+            
+            <svg className="w-16 h-16 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              {/* 机器人天线 */}
+              <motion.path 
+                initial={{ pathLength: 0, opacity: 0 }}
+                animate={{ pathLength: 1, opacity: 1 }}
+                transition={{ duration: 0.5, delay: 0.2 }}
+                d="M12 2v2" 
+              />
+              <motion.circle 
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ duration: 0.3, delay: 0.7 }}
+                cx="12" cy="2" r="1" fill="currentColor"
+              />
+              
+              {/* 机器人头部/外壳 */}
+              <motion.path 
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 0.8, ease: "easeInOut" }}
+                d="M5 8h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z" 
+              />
+              
+              {/* 机器人耳朵 */}
+              <motion.path 
+                initial={{ scaleX: 0 }}
+                animate={{ scaleX: 1 }}
+                transition={{ duration: 0.4, delay: 0.6 }}
+                d="M2 11h1M21 11h1" 
+              />
+              
+              {/* 机器人眼睛 */}
+              <motion.line 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.1, delay: 0.9 }}
+                x1="8" y1="13" x2="8.01" y2="13" strokeWidth="3" strokeLinecap="round"
+              />
+              <motion.line 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.1, delay: 1.0 }}
+                x1="16" y1="13" x2="16.01" y2="13" strokeWidth="3" strokeLinecap="round"
+              />
+              
+              {/* 机器人嘴巴 (数据波形) */}
+              <motion.path 
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 0.6, delay: 1.2 }}
+                d="M9 17h6" 
+              />
+            </svg>
+          </div>
+
+          <motion.h1 
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ delay: 0.4, duration: 0.6 }}
+            className="text-4xl md:text-5xl font-extrabold tracking-tight font-mono mb-2"
+          >
+            Robot Beat Analyzer
+          </motion.h1>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.8, duration: 0.6 }}
+            className="text-blue-300 font-medium tracking-widest uppercase text-sm"
+          >
+            SYSTEM INITIALIZING...
+          </motion.p>
+          <motion.div 
+            initial={{ width: 0 }}
+            animate={{ width: "100%" }}
+            transition={{ delay: 1.2, duration: 0.8, ease: "easeInOut" }}
+            className="h-1 bg-blue-500 mt-6 rounded-full"
+          />
+        </motion.div>
+      </div>
+    );
+  }
+
+  /* ================= 页面阶段 2：欢迎与导入界面 (Welcome) ================= */
+  if (appState === "welcome") {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-[#f8fafc] p-6 relative overflow-hidden">
+        {/* 动态光晕背景装饰 */}
+        <div className="absolute top-[-10%] left-[-10%] w-[40rem] h-[40rem] bg-blue-400/20 rounded-full blur-[100px] pointer-events-none"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40rem] h-[40rem] bg-purple-400/20 rounded-full blur-[100px] pointer-events-none"></div>
+        
+        <motion.div 
+          initial={{ opacity: 0, y: 30, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.6, ease: "easeOut" }}
+          className="max-w-md w-full bg-white/80 backdrop-blur-2xl rounded-[2rem] p-10 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.1)] border border-white text-center relative z-10"
+        >
+          <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-inner border border-blue-100">
+            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          </div>
+          <h2 className="text-2xl font-extrabold text-slate-800 mb-3 tracking-tight">导入日志文件</h2>
+          <p className="text-slate-500 text-sm mb-8 leading-relaxed whitespace-pre-line">
+		{`请上传 RobotControlApp_xxxx-xx-xx .log 文件
+		系统将自动进行拆解与分析`}
+	</p>
+          
+          <label className="relative block group cursor-pointer">
+            <div className="absolute inset-0 bg-blue-500 rounded-xl blur opacity-25 group-hover:opacity-40 transition-opacity duration-300"></div>
+            <div className="relative bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold py-4 px-8 rounded-xl shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+              选择文件并开始分析
+            </div>
+            <input type="file" onChange={handleFile} className="hidden" />
+          </label>
+        </motion.div>
+      </div>
+    );
+  }
+
+  /* ================= 页面阶段 3：数据仪表盘 (Dashboard) ================= */
   return (
     <div className="h-screen w-full flex flex-col bg-[#f8fafc] font-sans text-slate-800 overflow-hidden">
       
       {/* 顶部工具栏 (Header) */}
-      <header className="flex-shrink-0 bg-white border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-4 z-10 shadow-sm">
+      <header className="flex-shrink-0 bg-white/80 backdrop-blur-md border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-4 z-20 shadow-sm sticky top-0">
         <div className="flex items-center gap-3">
           <div className="bg-blue-600 text-white p-2 rounded-lg shadow-sm">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
@@ -245,51 +514,66 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         
         {/* 左侧边栏 (Sidebar - 目录) */}
-        <aside className="w-72 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-0">
-          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+        <aside className="w-72 bg-slate-50/50 backdrop-blur-md border-r border-slate-200 flex flex-col flex-shrink-0 z-10 relative shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+          <div className="px-4 py-3 border-b border-slate-200/60 bg-white/40 flex justify-between items-center sticky top-0 z-10">
             <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">解析的 Plan 列表</span>
             {result && <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{Object.keys(result).length}</span>}
           </div>
           
-          <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {!result ? (
-              <div className="p-4 text-center text-sm text-slate-400 mt-10">
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                className="p-6 text-center text-sm text-slate-400 mt-10 bg-white/40 rounded-xl border border-slate-100/50 border-dashed"
+              >
                 暂无数据，请先导入日志
-              </div>
+              </motion.div>
             ) : (
-              Object.keys(result).map((plan) => {
-                const isActive = activePlan === plan;
-                const data = result[plan];
-                const hasError = data.anomalies.length > 0;
-                
-                return (
-                  <button
-                    key={plan}
-                    onClick={() => setActivePlan(plan)}
-                    className={`w-full text-left px-3 py-3 rounded-lg flex items-center justify-between transition-all duration-200 ${
-                      isActive 
-                        ? "bg-blue-50 border border-blue-100 shadow-sm" 
-                        : "hover:bg-slate-50 border border-transparent"
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0 pr-3">
-                      <div className={`text-sm font-semibold truncate font-mono ${isActive ? 'text-blue-700' : 'text-slate-700'}`} title={plan}>
-                        {plan}
+              <motion.div
+                initial="hidden"
+                animate="visible"
+                variants={{
+                  hidden: { opacity: 0 },
+                  visible: {
+                    opacity: 1,
+                    transition: { staggerChildren: 0.05 }
+                  }
+                }}
+              >
+                {Object.keys(result).map((plan) => {
+                  const isActive = activePlan === plan;
+                  const data = result[plan];
+                  const hasError = data.anomalies.length > 0;
+                  
+                  return (
+                    <button
+                      key={plan}
+                      onClick={() => setActivePlan(plan)}
+                      className={`w-full mb-2 text-left px-4 py-3 rounded-xl flex items-center justify-between transition-all duration-200 group ${
+                        isActive 
+                          ? "bg-white border-blue-200 shadow-[0_2px_12px_rgba(59,130,246,0.12)] ring-1 ring-blue-500/10" 
+                          : "bg-white/40 hover:bg-white border-transparent hover:border-slate-200 hover:shadow-sm"
+                      } border`}
+                    >
+                      <div className="flex-1 min-w-0 pr-3">
+                        <div className={`text-sm font-semibold truncate font-mono transition-colors ${isActive ? 'text-blue-700' : 'text-slate-600 group-hover:text-slate-800'}`} title={plan}>
+                          {plan}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2">
+                          <span className="flex items-center gap-1"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {data.avg.toFixed(3)}s</span>
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2">
-                        <span>Avg: {data.avg.toFixed(2)}s</span>
+                      
+                      <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${isActive ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'}`}>
+                          {data.count} 次
+                        </span>
+                        {hasError && <span className="w-2 h-2 rounded-full bg-red-400 ring-2 ring-red-50"></span>}
                       </div>
-                    </div>
-                    
-                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${isActive ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
-                        {data.count} 次
-                      </span>
-                      {hasError && <span className="w-2 h-2 rounded-full bg-red-400"></span>}
-                    </div>
-                  </button>
-                );
-              })
+                    </button>
+                  );
+                })}
+              </motion.div>
             )}
           </div>
         </aside>
@@ -312,31 +596,42 @@ export default function App() {
                 className="p-6 md:p-8 max-w-7xl mx-auto space-y-6"
               >
                 {/* 标题与核心指标 */}
-                <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+                <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
                   <h2 className="text-2xl font-bold text-slate-800 font-mono tracking-tight mb-6 flex items-center gap-3">
-                    <span className="w-2 h-6 bg-blue-500 rounded-full inline-block"></span>
+                    <span className="w-2 h-6 bg-blue-500 rounded-full inline-block shadow-[0_0_8px_rgba(59,130,246,0.6)]"></span>
                     {activePlan}
                   </h2>
                   
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6 divide-x divide-slate-100">
+                  <motion.div 
+                    initial="hidden" animate="visible"
+                    variants={{
+                      hidden: { opacity: 0 },
+                      visible: { opacity: 1, transition: { staggerChildren: 0.1 } }
+                    }}
+                    className="grid grid-cols-2 md:grid-cols-4 gap-6 divide-x divide-slate-100"
+                  >
                     {[
                       ["执行总次数", activeData.count, "次", "bg-blue-50 text-blue-600"], 
                       ["平均节拍", activeData.avg.toFixed(3), "s", "bg-indigo-50 text-indigo-600"], 
                       ["最大耗时", activeData.max.toFixed(3), "s", "bg-rose-50 text-rose-600"], 
                       ["最小耗时", activeData.min.toFixed(3), "s", "bg-emerald-50 text-emerald-600"]
                     ].map(([label, value, unit, colorClass], idx)=>(
-                      <div key={label} className={`flex flex-col ${idx !== 0 ? 'pl-6' : ''}`}>
+                      <motion.div 
+                        variants={{ hidden: { opacity: 0, y: 15 }, visible: { opacity: 1, y: 0 } }}
+                        key={label} 
+                        className={`flex flex-col group ${idx !== 0 ? 'pl-6' : ''}`}
+                      >
                         <div className="flex items-center gap-2 mb-2">
-                          <span className={`w-2 h-2 rounded-full ${colorClass.split(' ')[0].replace('bg-', 'bg-').replace('50', '400')}`}></span>
+                          <span className={`w-2 h-2 rounded-full ${colorClass.split(' ')[0].replace('bg-', 'bg-').replace('50', '400')} transition-transform group-hover:scale-150`}></span>
                           <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">{label}</span>
                         </div>
                         <div className="flex items-baseline gap-1">
                           <span className="text-3xl font-extrabold text-slate-800 tabular-nums tracking-tight">{value}</span>
                           <span className="text-sm font-medium text-slate-400">{unit}</span>
                         </div>
-                      </div>
+                      </motion.div>
                     ))}
-                  </div>
+                  </motion.div>
                 </div>
 
                 {/* 异常报告 */}
@@ -359,7 +654,10 @@ export default function App() {
                 {/* 图表区 */}
                 <div className="grid lg:grid-cols-2 gap-6">
                   {/* 趋势图 */}
-                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.1 }}
+                    className="bg-white rounded-2xl border border-slate-200 p-5 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] hover:shadow-lg transition-shadow duration-300"
+                  >
                     <h3 className="mb-4 text-slate-700 font-bold flex items-center gap-2 text-sm">
                       <span className="bg-slate-100 text-slate-500 p-1.5 rounded-lg">📈</span> 每次执行总耗时趋势
                     </h3>
@@ -369,16 +667,19 @@ export default function App() {
                         <XAxis dataKey="index" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
                         <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
                         <Tooltip 
-                          contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
+                          contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgb(0 0 0 / 0.1)'}}
                           itemStyle={{color: '#0f172a', fontWeight: 600}}
                         />
-                        <Line type="monotone" dataKey="time" stroke="#3b82f6" strokeWidth={2.5} dot={{fill: '#3b82f6', strokeWidth: 2, r: 3}} activeDot={{r: 5, strokeWidth: 0}} />
+                        <Line type="monotone" dataKey="time" stroke="#3b82f6" strokeWidth={2.5} dot={{fill: '#3b82f6', strokeWidth: 2, r: 3}} activeDot={{r: 5, strokeWidth: 0, fill: '#2563eb'}} />
                       </LineChart>
                     </ResponsiveContainer>
-                  </div>
+                  </motion.div>
 
                   {/* 节点排行 */}
-                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
+                    className="bg-white rounded-2xl border border-slate-200 p-5 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] hover:shadow-lg transition-shadow duration-300"
+                  >
                     <h3 className="mb-4 text-slate-700 font-bold flex items-center gap-2 text-sm">
                       <span className="bg-slate-100 text-slate-500 p-1.5 rounded-lg">📊</span> 单节点平均耗时 (Top)
                     </h3>
@@ -389,21 +690,21 @@ export default function App() {
                         <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
                         <Tooltip 
                           cursor={{fill: '#f8fafc'}}
-                          contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
+                          contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgb(0 0 0 / 0.1)'}}
                         />
                         <Bar dataKey="avg" radius={[4, 4, 0, 0]} maxBarSize={32}>
                           {activeData.nodes.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={index === 0 ? "#f43f5e" : "#94a3b8"} />
+                            <Cell key={`cell-${index}`} fill={index === 0 ? "#f43f5e" : "#94a3b8"} className="transition-all duration-300 hover:opacity-80 cursor-pointer" />
                           ))}
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
-                  </div>
+                  </motion.div>
                 </div>
 
                 {/* 执行流与循环结构分析 */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="p-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="p-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between rounded-t-2xl">
                     <h3 className="text-slate-800 font-bold flex items-center gap-2">
                       <span className="bg-blue-100 text-blue-600 p-1.5 rounded-lg">🔄</span> 
                       节点执行流拆解与循环识别
@@ -416,11 +717,21 @@ export default function App() {
                       const totalTime = run.groups?.reduce((sum,g)=>sum+g.total,0) || 0;
                       const loopGroups = run.groups?.filter(g => g.type === 'loop') || [];
                       const hasLoops = loopGroups.length > 0;
+                      const loopTotals = loopGroups.map(g => g.total).filter(t => Number.isFinite(t));
+                      const loopAvg = loopTotals.length > 0 ? (loopTotals.reduce((a, b) => a + b, 0) / loopTotals.length) : null;
+                      const loopMax = loopTotals.length > 0 ? Math.max(...loopTotals) : null;
+                      const loopMin = loopTotals.length > 0 ? Math.min(...loopTotals) : null;
+                      const isExpanded = !!expandedRuns[i];
                       
                       return (
-                        <div key={i} className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
-                          {/* Run Header */}
-                          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-white">
+                        <div key={i} className="bg-slate-50 rounded-xl border border-slate-200">
+                          {/* Run Header (Sticky & Clickable) */}
+                          <div 
+                            onClick={() => toggleRun(i)}
+                            className={`flex items-center justify-between px-4 py-3 bg-white/95 backdrop-blur-md cursor-pointer hover:bg-blue-50/50 transition-colors sticky top-0 z-10 ${
+                              isExpanded ? "border-b border-slate-200 rounded-t-xl shadow-sm" : "rounded-xl hover:shadow-sm"
+                            }`}
+                          >
                             <div className="flex items-center gap-3">
                               <span className="bg-slate-800 text-white w-6 h-6 rounded flex items-center justify-center text-xs font-bold shadow-sm">{i+1}</span>
                               <span className="text-sm font-bold text-slate-700">运行记录 #{i+1}</span>
@@ -430,14 +741,42 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-sm font-bold text-slate-800 tabular-nums bg-slate-100 px-3 py-1 rounded-md">
-                              总耗时: {totalTime.toFixed(3)}s
+                            <div className="flex items-center gap-4">
+                              <div className="hidden md:flex items-center gap-2 text-[11px] font-semibold text-slate-600">
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  循环均值: {loopAvg === null ? "-" : `${loopAvg.toFixed(3)}s`}
+                                </span>
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  最大: {loopMax === null ? "-" : `${loopMax.toFixed(3)}s`}
+                                </span>
+                                <span className="bg-slate-50 border border-slate-200 rounded px-2 py-1 tabular-nums">
+                                  最小: {loopMin === null ? "-" : `${loopMin.toFixed(3)}s`}
+                                </span>
+                              </div>
+                              <div className="text-sm font-bold text-slate-800 tabular-nums bg-slate-100 px-3 py-1 rounded-md">
+                                总耗时: {totalTime.toFixed(3)}s
+                              </div>
+                              <svg 
+                                className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} 
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
+                              </svg>
                             </div>
                           </div>
                           
-                          {/* 阶段列表 */}
-                          <div className="p-3 flex flex-col gap-2">
-                            {run.groups?.map((g, gi) => {
+                          {/* 阶段列表 (可折叠) */}
+                          <AnimatePresence initial={false}>
+                            {isExpanded && (
+                              <motion.div 
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: "auto", opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                transition={{ duration: 0.3, ease: "easeInOut" }}
+                                className="overflow-hidden"
+                              >
+                                <div className="p-3 flex flex-col gap-2">
+                                  {run.groups?.map((g, gi) => {
                               const config = GROUP_CONFIG[g.type];
                               const percentage = totalTime > 0 ? (g.total / totalTime * 100).toFixed(1) : 0;
                               
@@ -490,7 +829,10 @@ export default function App() {
                                 </div>
                               );
                             })}
-                          </div>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                         </div>
                       );
                     })}

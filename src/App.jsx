@@ -194,6 +194,7 @@ export default function App() {
   const [planFilter, setPlanFilter] = useState("");
   const [startTime, setStartTime] = useState(null);
   const [endTime, setEndTime] = useState(null);
+  const [filterNotice, setFilterNotice] = useState(null);
   
   // 新增 appState 来控制页面生命周期
   const [appState, setAppState] = useState("splash"); // "splash" | "welcome" | "dashboard"
@@ -215,6 +216,12 @@ export default function App() {
   useEffect(() => {
     setExpandedRuns({ 0: true });
   }, [activePlan]);
+
+  useEffect(() => {
+    if (!filterNotice) return;
+    const t = setTimeout(() => setFilterNotice(null), 3500);
+    return () => clearTimeout(t);
+  }, [filterNotice]);
 
   const toggleRun = (index) => {
     setExpandedRuns(prev => ({
@@ -331,16 +338,22 @@ export default function App() {
     
     // 成功导入数据后，进入仪表盘主界面
     setAppState("dashboard");
+    
+    // 清空 file input 的 value，允许连续上传同名文件触发 onChange
+    e.target.value = null;
   };
 
   const applyFilter = () => {
     if (rawText) {
       const parsedData = parseLog(rawText);
-      setResult(parsedData);
       const plans = Object.keys(parsedData);
-      if (plans.length > 0 && !plans.includes(activePlan)) {
-        setActivePlan(plans[0]);
+      if (plans.length === 0) {
+        setFilterNotice("当前筛选范围内没有数据，请重新选择时间范围");
+        return;
       }
+      setFilterNotice(null);
+      setResult(parsedData);
+      if (!plans.includes(activePlan)) setActivePlan(plans[0]);
     }
   };
 
@@ -527,6 +540,22 @@ export default function App() {
           <button className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-all shadow-md active:scale-95" onClick={applyFilter}>
             筛选
           </button>
+
+          <AnimatePresence initial={false}>
+            {filterNotice && (
+              <motion.div
+                key="filter-notice"
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.18 }}
+                className="px-3 py-2 rounded-lg bg-red-50 border border-red-100 text-red-700 text-xs font-semibold flex items-center gap-2 shadow-sm"
+              >
+                <span className="text-red-500">⚠️</span>
+                <span>{filterNotice}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
           
           <div className="w-px h-6 bg-slate-200 mx-1"></div>
 

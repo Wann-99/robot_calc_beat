@@ -560,10 +560,10 @@ export default function App() {
           {isSidebarOpen && (
             <motion.aside 
               initial={{ width: 0, opacity: 0, marginLeft: 0 }}
-              animate={{ width: sidebarWidth, opacity: 1, marginLeft: 16 }}
+              animate={{ width: sidebarWidth, opacity: 1, marginLeft: 8 }}
               exit={{ width: 0, opacity: 0, marginLeft: 0 }}
               transition={{ duration: isResizing ? 0 : 0.2, ease: "easeInOut" }}
-              className="bg-white border border-slate-200 rounded-2xl flex flex-col flex-shrink-0 z-20 shadow-sm overflow-hidden my-4"
+              className="bg-white border border-slate-200 rounded-2xl flex flex-col flex-shrink-0 z-20 shadow-sm overflow-hidden my-2"
             >
               <div className="px-4 py-4 border-b border-slate-100 flex justify-between items-center bg-white flex-shrink-0">
                 <div className="flex items-center gap-2 overflow-hidden">
@@ -665,7 +665,7 @@ export default function App() {
       {isSidebarOpen && (
         <div 
           onMouseDown={startResizing}
-          className={`w-1.5 my-4 rounded-full flex-shrink-0 cursor-col-resize z-30 transition-colors flex items-center justify-center mx-1 ${isResizing ? 'bg-blue-100' : 'bg-transparent hover:bg-slate-200'}`}
+          className={`w-1.5 my-2 rounded-full flex-shrink-0 cursor-col-resize z-30 transition-colors flex items-center justify-center mx-0.5 ${isResizing ? 'bg-blue-100' : 'bg-transparent hover:bg-slate-200'}`}
           title="拖动调整宽度"
         >
           <div className={`w-0.5 h-8 rounded-full ${isResizing ? 'bg-blue-400' : 'bg-slate-300'}`}></div>
@@ -673,7 +673,7 @@ export default function App() {
       )}
 
       {/* 右侧主内容区 (Main Workspace) */}
-      <main className="flex-1 flex flex-col overflow-y-auto py-4 pr-4 space-y-4">
+      <main className="flex-1 flex flex-col overflow-y-auto py-2 pr-2 space-y-4">
         
         {/* 顶部 Header & Filter 组合控制区 */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col flex-shrink-0 overflow-hidden">
